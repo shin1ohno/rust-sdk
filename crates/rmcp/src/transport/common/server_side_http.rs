@@ -28,7 +28,7 @@ pub(crate) fn accepted_response() -> Response<BoxBody<Bytes, Infallible>> {
         .expect("valid response")
 }
 pin_project_lite::pin_project! {
-    struct TokioTimer {
+    pub(crate) struct TokioTimer {
         #[pin]
         sleep: tokio::time::Sleep,
     }

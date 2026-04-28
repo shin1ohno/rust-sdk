@@ -216,26 +216,26 @@ fn forbidden_response(message: impl Into<String>) -> BoxResponse {
         .expect("valid response")
 }
 
-fn normalize_host(host: &str) -> String {
+pub(crate) fn normalize_host(host: &str) -> String {
     host.trim_matches('[')
         .trim_matches(']')
         .to_ascii_lowercase()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NormalizedAuthority {
-    host: String,
-    port: Option<u16>,
+pub(crate) struct NormalizedAuthority {
+    pub(crate) host: String,
+    pub(crate) port: Option<u16>,
 }
 
-fn normalize_authority(host: &str, port: Option<u16>) -> NormalizedAuthority {
+pub(crate) fn normalize_authority(host: &str, port: Option<u16>) -> NormalizedAuthority {
     NormalizedAuthority {
         host: normalize_host(host),
         port,
     }
 }
 
-fn parse_allowed_authority(allowed: &str) -> Option<NormalizedAuthority> {
+pub(crate) fn parse_allowed_authority(allowed: &str) -> Option<NormalizedAuthority> {
     let allowed = allowed.trim();
     if allowed.is_empty() {
         return None;
@@ -248,7 +248,7 @@ fn parse_allowed_authority(allowed: &str) -> Option<NormalizedAuthority> {
     Some(normalize_authority(allowed, None))
 }
 
-fn host_is_allowed(host: &NormalizedAuthority, allowed_hosts: &[String]) -> bool {
+pub(crate) fn host_is_allowed(host: &NormalizedAuthority, allowed_hosts: &[String]) -> bool {
     if allowed_hosts.is_empty() {
         // If the allowed hosts list is empty, allow all hosts (not recommended).
         return true;
@@ -328,7 +328,7 @@ fn bad_request_response(message: &str) -> BoxResponse {
         .expect("failed to build bad request response")
 }
 
-fn parse_host_header(headers: &HeaderMap) -> Result<NormalizedAuthority, BoxResponse> {
+pub(crate) fn parse_host_header(headers: &HeaderMap) -> Result<NormalizedAuthority, BoxResponse> {
     let Some(host) = headers.get(http::header::HOST) else {
         return Err(bad_request_response("Bad Request: missing Host header"));
     };

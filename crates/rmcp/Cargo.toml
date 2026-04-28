@@ -179,6 +179,15 @@ transport-streamable-http-server-session = [
   "transport-async-rw",
   "dep:tokio-stream",
 ]
+# Legacy MCP SSE transport server (MCP spec 2024-11-05). Provided for
+# compatibility with clients that still expect the GET-/sse + POST-/message
+# split (e.g. Anthropic Claude Desktop's MCP connector at the time of
+# writing). New deployments should use `transport-streamable-http-server`.
+transport-sse-server = [
+  "server",
+  "server-side-http",
+  "dep:tokio-stream",
+]
 # transport-ws = ["transport-io", "dep:tokio-tungstenite"]
 tower = ["dep:tower-service"]
 auth = ["dep:oauth2", "__reqwest", "dep:url"]

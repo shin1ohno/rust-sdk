@@ -112,6 +112,11 @@ pub mod streamable_http_server;
 #[cfg(all(feature = "transport-streamable-http-server", not(feature = "local")))]
 pub use streamable_http_server::tower::{StreamableHttpServerConfig, StreamableHttpService};
 
+#[cfg(all(feature = "transport-sse-server", not(feature = "local")))]
+pub mod sse_server;
+#[cfg(all(feature = "transport-sse-server", not(feature = "local")))]
+pub use sse_server::{SseServer, SseServerConfig};
+
 #[cfg(feature = "transport-streamable-http-client")]
 pub mod streamable_http_client;
 #[cfg(all(unix, feature = "transport-streamable-http-client-unix-socket"))]

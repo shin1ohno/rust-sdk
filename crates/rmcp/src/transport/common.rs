@@ -1,4 +1,4 @@
-#[cfg(feature = "transport-streamable-http-server")]
+#[cfg(feature = "server-side-http")]
 pub mod server_side_http;
 
 pub mod http_header;
