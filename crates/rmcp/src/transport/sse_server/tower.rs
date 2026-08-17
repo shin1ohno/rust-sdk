@@ -251,6 +251,20 @@ where
             }
         };
 
+        // Register the session BEFORE spawning the worker. The inbound
+        // channel buffers anything a POST delivers before the worker is
+        // scheduled, so early POSTs are not lost — and, more
+        // importantly, a worker that fails immediately cannot have its
+        // cleanup run before the entry exists (which would strand the
+        // entry in the map forever).
+        self.sessions.write().await.insert(
+            sid.clone(),
+            SseSessionEntry {
+                inbound: in_tx,
+                cancel: session_cancel.clone(),
+            },
+        );
+
         // Spawn a worker that drives the user-supplied service against
         // the in-memory transport. The cleanup guard ensures the
         // session is removed and downstream POSTs unblock no matter
@@ -269,18 +283,35 @@ where
             session_id: sid.clone(),
             cancel: session_cancel.clone(),
         };
+        let worker_cancel = session_cancel.clone();
         tokio::spawn(
             async move {
                 let _cleanup = cleanup; // hold across the await
                 let serve = AssertUnwindSafe(async {
                     use crate::ServiceExt;
                     match service.serve(transport).await {
-                        Ok(running) => match running.waiting().await {
-                            Ok(_quit_reason) => {}
-                            Err(e) => {
-                                tracing::debug!(error = %e, "service waiting ended");
+                        Ok(running) => {
+                            // Exit on EITHER the service finishing or the
+                            // session being cancelled. Waiting on the
+                            // service alone deadlocks a hung-up client:
+                            // the protocol loop only ends when its inbound
+                            // stream closes, and that stream's sender
+                            // lives in the session map entry this task's
+                            // own guard is responsible for removing.
+                            // Dropping the `waiting()` future drops the
+                            // `RunningService`, whose `Drop` cancels the
+                            // protocol loop.
+                            tokio::select! {
+                                res = running.waiting() => {
+                                    if let Err(e) = res {
+                                        tracing::debug!(error = %e, "service waiting ended");
+                                    }
+                                }
+                                _ = worker_cancel.cancelled() => {
+                                    tracing::debug!("SSE session cancelled; shutting down service");
+                                }
                             }
-                        },
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, "service::serve failed");
                         }
@@ -311,6 +342,22 @@ where
             .map(Result::<Sse, Infallible>::Ok)
             .take_until(async move { cancel.cancelled().await });
 
+        // Hang-up detection. hyper drops the response body when the
+        // client goes away (close, reset, or a keep-alive write that
+        // fails on a half-open socket), and dropping the body drops
+        // this guard — which cancels the session and removes its map
+        // entry, releasing the worker task above. Without a guard here
+        // nothing observes the disconnect at all, and every client that
+        // hangs up strands its session for the life of the process.
+        let frames = GuardedSseStream {
+            inner: frames,
+            _guard: SessionCleanup {
+                sessions: self.sessions.clone(),
+                session_id: sid.clone(),
+                cancel: session_cancel.clone(),
+            },
+        };
+
         let body = SseBody::new(frames);
         let body = match self.config.keep_alive {
             Some(interval) => body
@@ -318,16 +365,6 @@ where
                 .boxed(),
             None => body.boxed(),
         };
-
-        // Register the session AFTER spawning so the worker is guaranteed
-        // to be live before any POST handler can find this entry.
-        self.sessions.write().await.insert(
-            sid,
-            SseSessionEntry {
-                inbound: in_tx,
-                cancel: session_cancel,
-            },
-        );
 
         Response::builder()
             .status(StatusCode::OK)
@@ -402,13 +439,47 @@ pub(crate) fn extract_session_id(query: Option<&str>) -> Option<SessionId> {
     None
 }
 
-/// Cleanup guard for a spawned session worker.
+pin_project_lite::pin_project! {
+    /// SSE frame stream that owns a [`SessionCleanup`].
+    ///
+    /// The guard exists purely for its `Drop`: it is what turns "the
+    /// client hung up" (hyper dropping the response body) into session
+    /// teardown. Keeping it in a dedicated wrapper rather than captured
+    /// inside a combinator closure means a later refactor of the stream
+    /// pipeline cannot silently drop the behaviour.
+    struct GuardedSseStream<S> {
+        #[pin]
+        inner: S,
+        _guard: SessionCleanup,
+    }
+}
+
+impl<S: futures::Stream> futures::Stream for GuardedSseStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.project().inner.poll_next(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// Cleanup guard for a session.
 ///
-/// On drop — whether the worker returned cleanly, errored, panicked, or
-/// was cancelled — cancels the per-session token (waking the SSE
-/// stream's `take_until`) and removes the session entry from the
-/// shared map (so subsequent POSTs see 404 Not Found rather than
-/// hanging on a dead receiver).
+/// Held in two places, and idempotent so that either may fire first:
+/// by the spawned worker (so a service that exits on its own closes the
+/// SSE stream) and by the response body (so a client that hangs up
+/// releases the worker). On drop it cancels the per-session token
+/// (waking the SSE stream's `take_until` and the worker's select) and
+/// removes the session entry from the shared map — which also drops the
+/// inbound sender, so the service's protocol loop sees its stream end
+/// and subsequent POSTs see 404 Not Found rather than hanging on a dead
+/// receiver.
 struct SessionCleanup {
     sessions: SessionMap,
     session_id: SessionId,
